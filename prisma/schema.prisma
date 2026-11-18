@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Latest known quote per instrument (one row per symbol).
+/// Always accompanied by its source timestamp and its freshness level.
+model Quote {
+  symbol        String   @id // internal symbol (= Yahoo symbol, e.g. "^GSPC")
+  name          String
+  assetClass    String // index | fx | crypto | commodity | volatility | rate | equity | etf
+  currency      String?
+  price         Float
+  prevClose     Float?
+  change        Float?
+  changePct     Float?
+  dayHigh       Float?
+  dayLow        Float?
+  quoteTime     DateTime // quote timestamp on the source side
+  fetchedAt     DateTime // time when MarketPulse fetched it
+  provider      String // yahoo | binance | treasury | ecb ...
+  latency       String // realtime | delayed | eod
+  exchangeTz    String?
+  sparkline     Json? // [[epochSec, price], ...] current session
+  updatedAt     DateTime @updatedAt
+
+  @@index([assetClass])
+}
+
+/// Article / news wire. One row per URL. Articles about the same event share clusterId.
+model NewsItem {
+  id          String    @id @default(cuid())
+  urlHash     String    @unique
+  url         String
+  title       String
+  summary     String?
+  source      String // "Bloomberg", "Fed", ...
+  feed        String // feed identifier
+  publishedAt DateTime
+  fetchedAt   DateTime  @default(now())
+  category    String // monetary_policy | macro | earnings | equities | rates | fx | commodities | crypto | geopolitics | regulation | corporate | other
+  countries   String[]
+  assets      String[] // internal symbols concerned (e.g. "^GSPC", "EURUSD=X", "AAPL")
+  importance  Int // 1 (low) .. 5 (critical)
+  isBreaking  Boolean   @default(false)
+  clusterId   String // = id of the first article in the cluster
+  isPrimary   Boolean   @default(true) // cluster representative in the feed
+  favorite    Boolean   @default(false)
+  analysis    AiAnalysis?
+
+  @@index([publishedAt])
+  @@index([clusterId])
+  @@index([importance, publishedAt])
+}
+
+model AiAnalysis {
+  id          String   @id @default(cuid())
+  newsId      String   @unique
+  news        NewsItem @relation(fields: [newsId], references: [id], onDelete: Cascade)
+  content     Json // AnalysisContent structure (see src/lib/ai/schemas.ts)
+  model       String
+  createdAt   DateTime @default(now())
+}
+
+/// Calendar event (macro, central bank, earnings).
+model EconEvent {
+  id          String   @id // stable key derived from the source
+  kind        String // macro | central_bank | speech | earnings
+  title       String
+  country     String // currency/country code: USD, EUR, GBP, JPY... or "US" for earnings
+  scheduledAt DateTime // UTC
+  allDay      Boolean  @default(false)
+  importance  Int // 1..3 (low/medium/high)
+  previous    String?
+  consensus   String?
+  actual      String?
+  actualSource String?
+  surprise    Float? // (actual - consensus) if numerically comparable
+  ticker      String? // for earnings
+  source      String // forexfactory | fed | ecb | nasdaq | fred
+  sourceUrl   String?
+  updatedAt   DateTime @updatedAt
+
+  @@index([scheduledAt])
+}
+
+model Watchlist {
+  id        String          @id @default(cuid())
+  name      String
+  position  Int             @default(0)
+  createdAt DateTime        @default(now())
+  items     WatchlistItem[]
+}
+
+model WatchlistItem {
+  id          String    @id @default(cuid())
+  watchlistId String
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  symbol      String
+  name        String?
+  position    Int       @default(0)
+  addedAt     DateTime  @default(now())
+
+  @@unique([watchlistId, symbol])
+}
+
+/// Alert rule configured by the user.
+model AlertRule {
+  id            String    @id @default(cuid())
+  name          String
+  type          String // price_above | price_below | pct_move | vix_spike | central_bank | macro_upcoming | earnings_watchlist | asset_news
+  symbol        String?
+  threshold     Float?
+  priority      Int       @default(2) // 1 low, 2 normal, 3 high
+  cooldownMin   Int       @default(60)
+  channels      String[]  @default(["inapp"]) // inapp | browser | telegram | email
+  enabled       Boolean   @default(true)
+  lastTriggered DateTime?
+  createdAt     DateTime  @default(now())
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  ruleId    String?
+  dedupKey  String    @unique // avoids duplicates (rule + triggering object)
+  title     String
+  body      String
+  priority  Int       @default(2)
+  url       String?
+  channels  String[]  @default(["inapp"])
+  createdAt DateTime  @default(now())
+  readAt    DateTime?
+
+  @@index([createdAt])
+}
+
+/// Generated Morning Brief / Market Wrap.
+model Report {
+  id          String   @id @default(cuid())
+  kind        String // morning_brief | market_wrap
+  forDate     String // YYYY-MM-DD (Europe/Paris)
+  content     Json // { sections: [...], narrative?, sources: [...] }
+  aiUsed      Boolean
+  generatedAt DateTime @default(now())
+
+  @@unique([kind, forDate])
+}
+
+/// Health of data providers (last success, last error).
+model ProviderStatus {
+  id          String    @id // e.g. "yahoo", "rss:bloomberg"
+  lastSuccess DateTime?
+  lastError   DateTime?
+  errorMsg    String?
+  okCount     Int       @default(0)
+  errorCount  Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+}
+
+model Setting {
+  key   String @id
+  value Json
+}
